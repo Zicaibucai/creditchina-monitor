@@ -77,7 +77,7 @@ Windows 后端命令为 `.venv\Scripts\python.exe api_server.py`。
 
 环境变量优先于 `.env.local`。代理凭据只用于运行时请求，不会写入日志、SQLite 或导出文件。
 
-前端通常会自动连接当前访问主机的 `8765` 端口。后端位于其他地址时，可参考 `frontend/.env.example` 设置 `NEXT_PUBLIC_CRAWLER_API_BASE`。
+前端通常会自动连接当前访问主机的 `8765` 端口。后端位于其他地址时，可参考 `frontend/.env.example` 设置 `VITE_CRAWLER_API_BASE`。为 API 设置了 `CREDITCHINA_API_TOKEN` 时，前端需同步设置 `VITE_CRAWLER_API_TOKEN`。
 
 ## 命令行采集
 
@@ -128,7 +128,7 @@ npm run lint
 
 ```text
 creditchina_merged/  Python 采集、存储、导出与 API
-frontend/            React/Next.js 管理看板
+frontend/            Vite + React 管理看板
 tests/               Python 单元测试
 monitor_companies.txt 默认监控企业名单
 output/              本机运行数据（自动生成，不交付）

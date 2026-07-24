@@ -1,5 +1,5 @@
-const configuredApiBase = process.env.NEXT_PUBLIC_CRAWLER_API_BASE?.replace(/\/$/, "");
-const apiToken = process.env.NEXT_PUBLIC_CRAWLER_API_TOKEN ?? "";
+const configuredApiBase = import.meta.env.VITE_CRAWLER_API_BASE?.replace(/\/$/, "");
+const apiToken = import.meta.env.VITE_CRAWLER_API_TOKEN ?? "";
 
 export const CRAWLER_API_BASE = configuredApiBase || (
   typeof window !== "undefined"

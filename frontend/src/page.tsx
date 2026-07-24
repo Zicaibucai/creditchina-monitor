@@ -1,7 +1,3 @@
-"use client";
-
-/* eslint-disable @next/next/no-img-element -- Evidence images use dynamic local API URLs. */
-
 import {
   Activity,
   Bell,

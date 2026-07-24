@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-默认打开 `http://localhost:3000`，并连接当前访问主机的 `http://<主机>:8765/api/v1`。如果 API 位于其他地址，复制 `.env.example` 为 `.env.local`，设置 `NEXT_PUBLIC_CRAWLER_API_BASE` 后重新启动。
+默认打开 `http://localhost:3000`，并连接当前访问主机的 `http://<主机>:8765/api/v1`。如果 API 位于其他地址，复制 `.env.example` 为 `.env.local`，设置 `VITE_CRAWLER_API_BASE` 后重新启动。
 
 交付前检查：
 
@@ -20,4 +20,8 @@ npm test
 npm run lint
 ```
 
-`dist/`、`node_modules/`、`.vinext/` 和 `.wrangler/` 均为可再生成内容，不应交付或提交。
+`dist/` 和 `node_modules/` 均为可再生成内容，不应交付或提交。
+
+## API 令牌
+
+后端 `.env.local` 设置了 `CREDITCHINA_API_TOKEN` 时，在本目录创建 `.env.local` 并设置相同的 `VITE_CRAWLER_API_TOKEN`，页面请求才会携带令牌。

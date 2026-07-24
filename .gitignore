@@ -15,7 +15,5 @@ dist/
 
 frontend/node_modules/
 frontend/dist/
-frontend/.vinext/
-frontend/.wrangler/
 frontend/tsconfig.tsbuildinfo
 frontend/.env*
