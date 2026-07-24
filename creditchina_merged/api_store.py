@@ -131,20 +131,75 @@ def _record_from_payload(payload: Mapping[str, Any]) -> EnterpriseRecord:
     )
 
 
+class _SharedConnection:
+    """共享 sqlite3 连接的线程安全包装。
+
+    - 每个调用点拿到独立游标，互不干扰；
+    - ``close()`` 不关闭底层连接，只回滚未提交事务并重置内部游标，
+      因此旧的 ``try/finally connection.close()`` 写法保持安全；
+    - 所有方法在重入锁内执行，同一时刻只有一个线程操作底层连接。
+    """
+
+    def __init__(self, connection: sqlite3.Connection, lock: threading.RLock) -> None:
+        self._connection = connection
+        self._lock = lock
+
+    def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+        with self._lock:
+            return self._connection.execute(sql, parameters)
+
+    def executemany(self, sql: str, seq_of_parameters: Any) -> sqlite3.Cursor:
+        with self._lock:
+            return self._connection.executemany(sql, seq_of_parameters)
+
+    def executescript(self, script: str) -> sqlite3.Cursor:
+        with self._lock:
+            return self._connection.executescript(script)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._connection.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._connection.rollback()
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.rollback()
+
+
 class TaskStore:
-    """线程安全的 SQLite 任务与历史仓。"""
+    """线程安全的 SQLite 任务与历史仓。
+
+    持有一个长连接（WAL 模式），所有读写通过 ``_lock`` 串行化，
+    避免每次操作都重开连接并重复执行 PRAGMA。
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._connection = sqlite3.connect(
+            str(self.path), timeout=30, check_same_thread=False
+        )
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA foreign_keys=ON")
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        """返回共享连接。
+
+        保留旧接口：历史代码用 ``connect()`` 加 ``try/finally close()``，
+        ``close()`` 已被下面的 ``_SharedConnection`` 变为无副作用的重置操作，
+        不会真正关闭共享连接。
+        """
+        return _SharedConnection(self._connection, self._lock)
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
 
     def initialize(self) -> None:
         connection = self.connect()

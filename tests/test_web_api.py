@@ -176,6 +176,36 @@ class WebApiTests(unittest.TestCase):
 
             self.assertIn("PUT", cors.kwargs["allow_methods"])
 
+    def test_store_uses_shared_connection_and_survives_concurrent_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TaskStore(Path(directory) / "state.sqlite3")
+            store.create_task("t1", ["企业一"])
+
+            errors = []
+
+            def worker(index):
+                try:
+                    for step in range(30):
+                        store.create_task("t%d-%d" % (index, step), ["企业%d" % index])
+                        store.list_tasks()
+                except Exception as exc:  # pragma: no cover - 失败时统一断言
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual([], errors)
+            self.assertEqual(121, len(store.list_tasks()))
+
+            # close() 包装不应真正断开共享连接
+            connection = store.connect()
+            connection.close()
+            self.assertEqual(121, len(store.list_tasks()))
+            store.close()
+
     def test_cors_defaults_to_localhost_and_is_configurable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
