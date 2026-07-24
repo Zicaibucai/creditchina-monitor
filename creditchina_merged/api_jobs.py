@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -18,6 +19,9 @@ from .http_client import AccessIntercepted, ProxyUnavailable, RequestFailed
 from .proxy_provider import KuaidailiPrivateProxyProvider, kuaidaili_enabled
 from .sh_zjw_spider import ShZjwSpider, default_company_code
 from .storage import FileStorage
+
+
+logger = logging.getLogger(__name__)
 
 class CrawlManager:
     """单 Chrome 会话后台队列，进度只由真实采集阶段驱动。"""
@@ -244,6 +248,7 @@ class CrawlManager:
                             except (AccessIntercepted, ProxyUnavailable):
                                 raise
                             except Exception as exc:
+                                logger.warning("证据截图失败：%s：%s", company, exc)
                                 record.errors["证据截图"] = str(exc)
                         if record.errors:
                             partial_errors.append(
@@ -345,6 +350,7 @@ class CrawlManager:
         except Exception as exc:
             if self._is_cancelled(task_id):
                 return
+            logger.exception("采集任务 %s 执行失败", task_id)
             self.store.update_task(
                 task_id,
                 status="failed",
@@ -476,6 +482,7 @@ class CreditScoreManager:
                         payload["input_code"] = company_code
                         self.store.save_credit_score(company_name, payload)
                 except Exception as exc:
+                    logger.warning("信用分采集失败：%s：%s", company_name, exc)
                     failures.append("%s：%s" % (company_name, str(exc)))
                 completed = index + 1
                 self.store.update_credit_score_job(
@@ -494,6 +501,7 @@ class CreditScoreManager:
         except Exception as exc:
             if self._is_cancelled(job_id):
                 return
+            logger.exception("信用分任务 %s 执行失败", job_id)
             self.store.update_credit_score_job(
                 job_id,
                 status="failed",

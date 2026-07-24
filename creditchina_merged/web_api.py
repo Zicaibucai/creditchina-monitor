@@ -700,8 +700,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args(argv)
+    import logging
+
     import uvicorn
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(threadName)s] %(levelname)s %(name)s: %(message)s",
+    )
     uvicorn.run(
         "creditchina_merged.web_api:app" if args.reload else app,
         host=args.host,

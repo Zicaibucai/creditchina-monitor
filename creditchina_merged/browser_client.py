@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import queue
 import random
@@ -25,6 +26,9 @@ from urllib.request import urlopen
 from .config import ApiConfig, HttpConfig, ProxySpec
 from .http_client import AccessIntercepted, ProxyUnavailable, RequestFailed
 from .proxy_relay import AuthenticatedProxyRelay, ProxyRelayError, chrome_proxy_for
+
+
+logger = logging.getLogger(__name__)
 
 
 def _is_challenge(payload: Any) -> bool:
@@ -434,7 +438,7 @@ class BrowserClient:
         try:
             page.close()
         except Exception:
-            pass
+            logger.debug("关闭搜索页失败（可忽略）", exc_info=True)
         return detail_page
 
     def _wait_for_search_results(self, page: Any) -> None:
@@ -517,9 +521,9 @@ class BrowserClient:
                 return str(val).strip() if val is not None else None
             else:
                 msg = response.get("msg", "未知错误")
-                print(f"打码平台返回失败：code={response.get('code')}, msg={msg}", flush=True)
+                logger.info(f"打码平台返回失败：code={response.get('code')}, msg={msg}")
         except Exception as e:
-            print(f"打码平台请求异常: {e}", flush=True)
+            logger.info(f"打码平台请求异常: {e}")
         finally:
             session.close()
         return None
@@ -551,7 +555,7 @@ class BrowserClient:
             except Exception:
                 if time.monotonic() >= deadline:
                     break
-                print("验证码图片 5 秒内未加载，正在自动刷新……", flush=True)
+                logger.info("验证码图片 5 秒内未加载，正在自动刷新……")
                 try:
                     page.evaluate(
                         """
@@ -579,17 +583,17 @@ class BrowserClient:
                 captcha.screenshot(path=image_path)
                 answer = ""
                 if self.http.jfbym_token:
-                    print("检测到打码平台 Token，正在请求 jfbym.com 自动识别验证码...", flush=True)
+                    logger.info("检测到打码平台 Token，正在请求 jfbym.com 自动识别验证码...")
                     try:
                         with open(image_path, "rb") as f:
                             image_b64 = base64.b64encode(f.read()).decode()
                         answer = self._solve_captcha_jfbym(image_b64)
                         if answer:
-                            print(f"打码平台自动识别成功：{answer}", flush=True)
+                            logger.info(f"打码平台自动识别成功：{answer}")
                         else:
-                            print("打码平台识别失败", flush=True)
+                            logger.info("打码平台识别失败")
                     except Exception as e:
-                        print(f"打码平台调用出错：{e}", flush=True)
+                        logger.info(f"打码平台调用出错：{e}")
 
                 if not answer:
                     if not allow_manual:
@@ -603,19 +607,17 @@ class BrowserClient:
                                 "验证码自动识别连续失败 %d 次，任务未进入人工输入；"
                                 "请检查打码服务后从断点继续" % auto_failures
                             )
-                        print(
+                        logger.info(
                             "验证码自动识别失败（%d/%d），正在自动换图重试……"
                             % (auto_failures, max_auto_attempts),
-                            flush=True,
                         )
                         captcha.click()
                         page.wait_for_timeout(300)
                         continue
                     opened = self._open_local_image(image_path)
-                    print(
+                    logger.info(
                         "\n验证码图片已下载%s：%s"
                         % ("并打开预览" if opened else "", image_path),
-                        flush=True,
                     )
                     answer = input("请查看图片并在此输入验证码（直接回车可换一张）：").strip()
                     if not answer:
@@ -642,7 +644,7 @@ class BrowserClient:
                     raise RequestFailed("官网没有返回验证码校验结果") from exc
 
                 if self._has_vcode(page):
-                    print("验证码验证成功，继续采集。", flush=True)
+                    logger.info("验证码验证成功，继续采集。")
                     return
                 message = (error_tip.inner_text() or "验证码错误").strip()
                 if not allow_manual:
@@ -653,15 +655,14 @@ class BrowserClient:
                             "请检查打码服务后从断点继续"
                             % (auto_failures, message)
                         )
-                    print(
+                    logger.info(
                         "%s（%d/%d），正在自动换图重试……"
                         % (message, auto_failures, max_auto_attempts),
-                        flush=True,
                     )
                     captcha.click()
                     page.wait_for_timeout(300)
                     continue
-                print("%s，已自动下载新图片。" % message, flush=True)
+                logger.info("%s，已自动下载新图片。" % message)
             finally:
                 try:
                     os.unlink(image_path)
@@ -890,11 +891,11 @@ class BrowserClient:
                     try:
                         context.close()
                     except Exception:
-                        pass
+                        logger.debug("关闭浏览器上下文失败（可忽略）", exc_info=True)
                     try:
                         browser.close()
                     except Exception:
-                        pass
+                        logger.debug("关闭浏览器失败（可忽略）", exc_info=True)
                     if chrome_process is not None and chrome_process.poll() is None:
                         chrome_process.terminate()
                         try:
