@@ -229,6 +229,14 @@ class CrawlManager:
                                 task_id,
                                 checkpoint_company=checkpoint_company,
                                 checkpoint_payload=checkpoint_payload,
+                                progress=min(
+                                    98,
+                                    max(
+                                        phase_start + 2,
+                                        int(((index + 0.65) / total) * 100),
+                                    ),
+                                ),
+                                speed="官网数据已采集，正在准备处罚截图 · %s" % proxy_label,
                             )
                         if self._is_cancelled(task_id):
                             return

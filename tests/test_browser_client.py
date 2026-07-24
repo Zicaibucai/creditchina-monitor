@@ -96,6 +96,18 @@ class _Page:
         return {"status": 200, "text": json.dumps({"status": 0, "data": []})}
 
 
+class _CachedResponse:
+    status = 200
+    url = (
+        "https://public.creditchina.gov.cn/private-api/typeSourceSearch"
+        "?rcwCQitg=encrypted-official-query"
+    )
+
+    @staticmethod
+    def json():
+        return {"status": 200, "data": {"list": [{"cached": True}]}}
+
+
 class _ForbiddenPage(_Page):
     def evaluate(self, script, argument):
         self.script = script
@@ -253,6 +265,10 @@ class _NoCatalogPage:
 class _AltCatalogPage(_NoCatalogPage):
     """xzglCatalog 缺失、但 cataNum24 存在的页面：应继续采集。"""
 
+    @staticmethod
+    def evaluate(script):
+        return True
+
     def locator(self, selector):
         if selector == "#cataNum24":
             return _AltCatalogTab()
@@ -279,6 +295,54 @@ class _AltCatalogTab:
     @staticmethod
     def evaluate(script):
         return None
+
+
+class _RenderedAfterNavigationTimeoutPage:
+    """导航事件超时，但详情页关键 DOM 已经出现在 Chrome 中。"""
+
+    @staticmethod
+    def goto(*args, **kwargs):
+        raise TimeoutError("Page.goto: Timeout 60000ms exceeded")
+
+    @staticmethod
+    def evaluate(script):
+        return True
+
+    @staticmethod
+    def locator(selector):
+        if selector == "#cataNum24":
+            return _PresentAnchorLocator()
+        return _MissingCatalogLocator()
+
+
+class _PresentAnchorLocator:
+    @staticmethod
+    def count():
+        return 1
+
+
+class _BlankEvidenceNavigationTimeoutPage(_RenderedAfterNavigationTimeoutPage):
+    @staticmethod
+    def evaluate(script):
+        return False
+
+    @staticmethod
+    def locator(selector):
+        return _MissingCatalogLocator()
+
+
+class _ReusableDetailPage:
+    url = "https://www.creditchina.gov.cn/detail?keyword=%E7%A4%BA%E4%BE%8B%E4%BC%81%E4%B8%9A"
+
+    def __init__(self):
+        self.goto_count = 0
+
+    @staticmethod
+    def evaluate(script):
+        return True
+
+    def goto(self, *args, **kwargs):
+        self.goto_count += 1
 
 
 class BrowserClientTests(unittest.TestCase):
@@ -313,6 +377,25 @@ class BrowserClientTests(unittest.TestCase):
         self.assertEqual(page.url, kwargs["headers"]["Referer"])
         self.assertFalse(kwargs["fail_on_status_code"])
         self.assertEqual(6000, kwargs["timeout"])
+
+    def test_page_loaded_api_response_is_reused_without_duplicate_request(self):
+        client = self._client(timeout=6)
+        client._response_cache = {}
+        client._logical_response_cache = {}
+        client._latest_endpoint_cache = {}
+        client._remember_api_response(_CachedResponse())
+        page = _Page()
+        same_query_different_order = (
+            "https://public.creditchina.gov.cn/private-api/typeSourceSearch"
+            "?source=&pageSize=10&page=1&type=%E8%A1%8C%E6%94%BF%E7%AE%A1%E7%90%86"
+            "&keyword=%E7%A4%BA%E4%BE%8B%E4%BC%81%E4%B8%9A&pubSort=desc"
+        )
+
+        payload = client._fetch(page, same_query_different_order)
+
+        self.assertTrue(payload["data"]["list"][0]["cached"])
+        self.assertEqual("", page.script)
+        self.assertIsNone(page.context.request.call)
 
     def test_412_uses_same_browser_context_navigation(self):
         page = _Page(fail=True)
@@ -359,7 +442,7 @@ class BrowserClientTests(unittest.TestCase):
         client.request_interval = 0
 
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(RequestFailed, "信用信息目录"):
+            with self.assertRaisesRegex(RequestFailed, "真实企业数据"):
                 client._capture_penalty_page(
                     _NoCatalogPage(),
                     {
@@ -370,6 +453,7 @@ class BrowserClientTests(unittest.TestCase):
                         "output_dir": directory,
                     },
                 )
+            self.assertFalse((Path(directory) / "evidence").exists())
 
     def test_alternate_catalog_anchor_allows_capture_to_continue(self):
         """xzglCatalog 缺失但处罚栏存在时，不应整页作废。"""
@@ -396,6 +480,44 @@ class BrowserClientTests(unittest.TestCase):
                 )
             self.assertNotIsInstance(caught.exception, RequestFailed)
             self.assertNotIn("信用信息目录", str(caught.exception))
+
+    def test_rendered_evidence_page_survives_navigation_timeout_without_ip_swap(self):
+        """页面已渲染时，goto 超时不能被当成代理失效。"""
+
+        client = self._client(timeout=4)
+        client.http = HttpConfig(proxies=(parse_proxy("127.0.0.1:18080"),))
+
+        response = client._goto_evidence_page(
+            _RenderedAfterNavigationTimeoutPage(),
+            "https://example/detail",
+        )
+
+        self.assertIsNone(response)
+
+    def test_loaded_company_detail_is_reused_without_second_navigation(self):
+        client = self._client(timeout=4)
+        page = _ReusableDetailPage()
+
+        response = client._prepare_evidence_page(
+            page,
+            "https://www.creditchina.gov.cn/detail"
+            "?keyword=%E7%A4%BA%E4%BE%8B%E4%BC%81%E4%B8%9A",
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(0, page.goto_count)
+
+    def test_blank_evidence_page_navigation_timeout_still_replaces_proxy(self):
+        """页面空白且导航超时时，仍应识别为代理不可用。"""
+
+        client = self._client(timeout=4)
+        client.http = HttpConfig(proxies=(parse_proxy("127.0.0.1:18080"),))
+
+        with self.assertRaisesRegex(RequestFailed, "空白骨架"):
+            client._goto_evidence_page(
+                _BlankEvidenceNavigationTimeoutPage(),
+                "https://example/detail",
+            )
 
     def test_official_requests_are_paced_within_one_ip_session(self):
         client = self._client()

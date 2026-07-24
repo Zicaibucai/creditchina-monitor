@@ -162,6 +162,7 @@ class CreditChinaCrawler:
         self.client = client
         self.api = api or ApiConfig()
         self._current_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+        self._current_cache_errors: Dict[tuple, str] = {}
 
     def _url(self, path: str, params: Mapping[str, Any]) -> str:
         path = path if path.startswith("/") else "/" + path
@@ -350,23 +351,34 @@ class CreditChinaCrawler:
         records: List[Dict[str, Any]] = []
         seen = set()
         for page in range(1, self.api.max_pages + 1):
-            payload = self.client.get_json(
-                self._url(
-                    self.api.category_path,
-                    {
-                        "source": "",
-                        "type": category,
-                        "searchState": 1,
-                        "entityType": hit.entity_type or "1",
-                        "scenes": "defaultscenario",
-                        "keyword": hit.name,
-                        "tyshxydm": hit.company_code,
-                        "page": page,
-                        "pageSize": self.api.page_size,
-                        "pubSort": "desc",
-                    },
+            try:
+                payload = self.client.get_json(
+                    self._url(
+                        self.api.category_path,
+                        {
+                            "source": "",
+                            "type": category,
+                            "searchState": 1,
+                            "entityType": hit.entity_type or "1",
+                            "scenes": "defaultscenario",
+                            "keyword": hit.name,
+                            "tyshxydm": hit.company_code,
+                            "page": page,
+                            "pageSize": self.api.page_size,
+                            "pubSort": "desc",
+                        },
+                    )
                 )
-            )
+            except (AccessIntercepted, ProxyUnavailable) as exc:
+                if page == 1 or not records:
+                    raise
+                error = (
+                    "%s第 %d 页触发官网风控；已保留前 %d 条，本次分页不完整"
+                    % (category, page, len(records))
+                )
+                self._current_cache_errors[cache_key] = error
+                LOGGER.warning("%s %s：%s", hit.name, error, exc)
+                break
             ensure_api_payload(payload)
             rows = first_list(payload, (("data", "list"),))
             for item in rows:
@@ -382,6 +394,26 @@ class CreditChinaCrawler:
                 break
         self._current_cache[cache_key] = records
         return records
+
+    def _apply_current_cache_errors(
+        self,
+        record: EnterpriseRecord,
+        hit: SearchHit,
+    ) -> None:
+        if self.api.mode != "current":
+            return
+        administrative_key = (
+            hit.name,
+            hit.company_code,
+            hit.uuid,
+            "行政管理",
+        )
+        administrative_error = self._current_cache_errors.get(administrative_key)
+        if administrative_error:
+            # 行政许可和行政处罚来自同一分页接口。两个栏目都标错，
+            # 可防止部分第一页结果覆盖上次完整快照或产生“已删除”公告。
+            record.errors.setdefault("行政许可", administrative_error)
+            record.errors.setdefault("行政处罚", administrative_error)
 
     def _detail(self, hit: SearchHit) -> Dict[str, Any]:
         if self.api.mode == "current":
@@ -646,6 +678,7 @@ class CreditChinaCrawler:
             except Exception as exc:
                 record.errors[label] = str(exc)
                 LOGGER.warning("%s %s失败：%s", hit.name, label, exc)
+        self._apply_current_cache_errors(record, hit)
         return record
 
     def crawl_company(self, company_name: str) -> EnterpriseRecord:
@@ -679,4 +712,5 @@ class CreditChinaCrawler:
             except Exception as exc:
                 record.errors[label] = str(exc)
                 LOGGER.warning("%s %s失败：%s", hit.name, label, exc)
+        self._apply_current_cache_errors(record, hit)
         return record

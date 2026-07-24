@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.error import URLError
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import urlopen
 
 from .config import ApiConfig, HttpConfig, ProxySpec
@@ -87,6 +87,11 @@ class BrowserClient:
         self.captcha_auto_attempts = max(1, captcha_auto_attempts)
         self.captcha_solver_timeout = max(1.0, captcha_solver_timeout)
         self._last_official_request_at = 0.0
+        self._response_cache: Dict[Tuple[str, str, Tuple[Tuple[str, str], ...]], Any] = {}
+        self._logical_response_cache: Dict[
+            Tuple[str, str, Tuple[Tuple[str, str], ...]], Any
+        ] = {}
+        self._latest_endpoint_cache: Dict[Tuple[str, str], Any] = {}
         self._commands: "queue.Queue[Optional[Tuple[str, Any, queue.Queue[Any]]]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="浏览器会话", daemon=True)
         self._closed = False
@@ -137,6 +142,205 @@ class BrowserClient:
         if remaining > 0:
             page.wait_for_timeout(int(remaining * 1000))
         self._last_official_request_at = time.monotonic()
+
+    @staticmethod
+    def _detail_page_has_data(page: Any) -> bool:
+        """详情页必须出现真实字段或非零目录，只有页面骨架不算就绪。"""
+
+        try:
+            return bool(
+                page.evaluate(
+                    """
+                    () => {
+                      const hasText = (selector) => Array.from(
+                        document.querySelectorAll(selector)
+                      ).some(node => (node.textContent || '').trim().length > 0);
+                      const hasPositiveCount = Array.from(
+                        document.querySelectorAll('#xzglCatalog span, .tab-title em')
+                      ).some(node => Number.parseInt(
+                        (node.textContent || '').replace(/\\D/g, ''), 10
+                      ) > 0);
+                      return hasText('.company-messages-box')
+                        || hasText('#resultTab1 td')
+                        || hasText('#resultTab2 td.graybg')
+                        || hasPositiveCount;
+                    }
+                    """
+                )
+            )
+        except Exception:
+            logger.debug("检查详情页真实数据失败", exc_info=True)
+            return False
+
+    @staticmethod
+    def _is_requested_detail_page(page: Any, detail_url: str) -> bool:
+        try:
+            current = urlparse(str(page.url))
+            requested = urlparse(detail_url)
+            current_query = parse_qs(current.query)
+            requested_query = parse_qs(requested.query)
+            return (
+                current.netloc.lower() == requested.netloc.lower()
+                and current.path.rstrip("/") == requested.path.rstrip("/")
+                and current_query.get("keyword", [""])[0]
+                == requested_query.get("keyword", [""])[0]
+            )
+        except Exception:
+            return False
+
+    def _wait_for_detail_page_data(self, page: Any, timeout: int = 15000) -> bool:
+        if self._detail_page_has_data(page):
+            return True
+        try:
+            page.wait_for_function(
+                """
+                () => {
+                  const hasText = (selector) => Array.from(
+                    document.querySelectorAll(selector)
+                  ).some(node => (node.textContent || '').trim().length > 0);
+                  const hasPositiveCount = Array.from(
+                    document.querySelectorAll('#xzglCatalog span, .tab-title em')
+                  ).some(node => Number.parseInt(
+                    (node.textContent || '').replace(/\\D/g, ''), 10
+                  ) > 0);
+                  return hasText('.company-messages-box')
+                    || hasText('#resultTab1 td')
+                    || hasText('#resultTab2 td.graybg')
+                    || hasPositiveCount;
+                }
+                """,
+                timeout=timeout,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _goto_evidence_page(self, page: Any, detail_url: str) -> Any:
+        """打开证据页；15 秒内没有真实字段时拒绝保存空白证据。"""
+
+        try:
+            return page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+        except Exception as exc:
+            if self._detail_page_has_data(page):
+                logger.warning(
+                    "官网证据页导航等待超时，但真实数据已经渲染；继续采集"
+                )
+                return None
+            if isinstance(exc, TimeoutError):
+                raise RequestFailed(
+                    "官网证据页 15 秒内仍只有空白骨架，已取消截图"
+                ) from exc
+            if self._proxy_failure(exc):
+                raise ProxyUnavailable("当前代理无法打开官网证据页") from exc
+            raise
+
+    def _prepare_evidence_page(self, page: Any, detail_url: str) -> Any:
+        """优先复用已加载详情页，避免二次导航触发风控并清空 DOM。"""
+
+        if (
+            self._is_requested_detail_page(page, detail_url)
+            and self._detail_page_has_data(page)
+        ):
+            logger.info("复用已加载完整的企业详情页，直接生成证据")
+            return None
+        self._pace_official_request(page)
+        response = self._goto_evidence_page(page, detail_url)
+        if not self._wait_for_detail_page_data(page):
+            raise RequestFailed("官网证据页 15 秒内未加载出真实企业数据，已取消截图")
+        return response
+
+    @staticmethod
+    def _response_cache_key(
+        url: str,
+    ) -> Tuple[str, str, Tuple[Tuple[str, str], ...]]:
+        parsed = urlparse(url)
+        return (
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            tuple(sorted(parse_qsl(parsed.query, keep_blank_values=True))),
+        )
+
+    @staticmethod
+    def _logical_response_cache_key(
+        url: str,
+    ) -> Tuple[str, str, Tuple[Tuple[str, str], ...]]:
+        """按接口业务参数识别同一次请求，忽略前端展示类参数差异。"""
+
+        parsed = urlparse(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        endpoint = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        if endpoint == "typeSourceSearch":
+            selected = (
+                ("keyword", params.get("keyword", "")),
+                ("page", params.get("page", "1")),
+                ("type", params.get("type", "")),
+            )
+        elif endpoint == "getTyshxydmDetailsContent":
+            selected = (
+                ("keyword", params.get("keyword", "")),
+                ("uuid", params.get("uuid", "")),
+            )
+        elif endpoint == "catalogSearchHome":
+            selected = (
+                ("keyword", params.get("keyword", "")),
+                ("page", params.get("page", "1")),
+            )
+        else:
+            selected = tuple(sorted(params.items()))
+        return (parsed.netloc.lower(), parsed.path.rstrip("/"), tuple(selected))
+
+    def _remember_api_response(self, response: Any) -> None:
+        """缓存官网页面自身成功收到的 JSON，避免采集器再请求一次。"""
+
+        try:
+            url = str(response.url)
+            base = urlparse(self.api.base_url)
+            parsed = urlparse(url)
+            if (
+                response.status != 200
+                or parsed.netloc.lower() != base.netloc.lower()
+                or not parsed.path.startswith(base.path.rstrip("/") + "/")
+            ):
+                return
+            payload = response.json()
+            if _is_challenge(payload) or _is_access_interception(payload):
+                return
+            self._response_cache[self._response_cache_key(url)] = payload
+            self._logical_response_cache[
+                self._logical_response_cache_key(url)
+            ] = payload
+            self._latest_endpoint_cache[
+                (parsed.netloc.lower(), parsed.path.rstrip("/"))
+            ] = payload
+            logger.debug("已缓存详情页官方接口响应：%s", parsed.path)
+        except Exception:
+            # 页面还有图片、脚本以及已取消的请求；它们不是采集失败。
+            logger.debug("忽略无法缓存的官网页面响应", exc_info=True)
+
+    def _cached_api_response(self, url: str) -> Any:
+        cache = getattr(self, "_response_cache", {})
+        cached = cache.get(self._response_cache_key(url))
+        if cached is not None:
+            return cached
+        logical_cache = getattr(self, "_logical_response_cache", {})
+        cached = logical_cache.get(self._logical_response_cache_key(url))
+        if cached is not None:
+            return cached
+
+        # 官网风控脚本会把真实查询参数改写成单个加密参数 rcwCQitg。
+        # 详情页默认加载的唯一 typeSourceSearch 响应就是“行政管理”
+        # 第一页；采集器随后请求同一页时可安全复用这个已显示在 DOM 中的
+        # 响应，避免重复请求立即触发 403/412。
+        parsed = urlparse(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        if (
+            parsed.path.rstrip("/").endswith("/typeSourceSearch")
+            and params.get("type") == "行政管理"
+            and params.get("page", "1") == "1"
+        ):
+            latest = getattr(self, "_latest_endpoint_cache", {})
+            return latest.get((parsed.netloc.lower(), parsed.path.rstrip("/")))
+        return None
 
     def get_json(self, url: str) -> Any:
         if self._closed:
@@ -222,22 +426,7 @@ class BrowserClient:
         penalties = list(payload.get("penalties") or [])
         captured_at = datetime.now().astimezone()
         safe_company = "".join(character if character not in '<>:"/\\|?*' else "_" for character in company_name).strip() or "company"
-        evidence_dir = (
-            Path(str(payload["output_dir"]))
-            / "evidence"
-            / captured_at.strftime("%Y-%m-%d")
-            / safe_company
-            / captured_at.strftime("%H%M%S")
-        )
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-
-        self._pace_official_request(page)
-        try:
-            response = page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as exc:
-            if self._proxy_failure(exc):
-                raise ProxyUnavailable("当前代理无法打开官网证据页") from exc
-            raise
+        response = self._prepare_evidence_page(page, detail_url)
         response_status = getattr(response, "status", None)
         if response_status in (403, 412, 429):
             raise AccessIntercepted("官网证据页触发访问风控（HTTP %d）" % response_status)
@@ -255,26 +444,34 @@ class BrowserClient:
             )
         ):
             raise AccessIntercepted("官网证据页已显示访问频率拦截")
-        # 详情页的信用信息目录在部分企业页面加载较慢或结构不同，
-        # 先等任意一个已知锚点，再逐步降级；全部缺失才判定为页面异常。
-        page_ready = False
-        for selector in ("#xzglCatalog", "#cataNum24", ".result-tab1"):
-            try:
-                page.locator(selector).first.wait_for(state="attached", timeout=10000)
-                page_ready = True
-                break
-            except Exception:
-                logger.debug("证据页锚点 %s 未出现，尝试下一个", selector)
-        if not page_ready:
-            body_hint = page.locator("body").inner_text(timeout=5000)[:200]
-            raise RequestFailed("官网证据页未加载出信用信息目录：%s" % body_hint)
+        evidence_dir = (
+            Path(str(payload["output_dir"]))
+            / "evidence"
+            / captured_at.strftime("%Y-%m-%d")
+            / safe_company
+            / captured_at.strftime("%H%M%S")
+        )
+
+        def current_penalty_tables() -> List[Any]:
+            result: List[Any] = []
+            tables = page.locator("#resultTab2 .result-table")
+            for table_index in range(tables.count()):
+                candidate = tables.nth(table_index)
+                first_label = candidate.locator("td.graybg").first.inner_text().strip()
+                if first_label == "行政处罚决定书文号":
+                    result.append(candidate)
+            return result
+
+        penalty_tables = current_penalty_tables()
         penalty_tab = page.locator("#cataNum24")
         expected_count = 0
         if penalty_tab.count():
             count_text = penalty_tab.locator("span").inner_text().strip() if penalty_tab.locator("span").count() else "0"
             expected_count = int("".join(character for character in count_text if character.isdigit()) or "0")
-            penalty_tab.evaluate("element => element.click()")
-            if expected_count:
+            # 默认“全部”页已经包含处罚时保留现有完整 DOM；只有处罚不在
+            # 当前第一页时才单独切换栏目，避免一次多余接口请求清空页面。
+            if expected_count and len(penalty_tables) < expected_count:
+                penalty_tab.evaluate("element => element.click()")
                 try:
                     page.wait_for_function(
                         """
@@ -286,14 +483,18 @@ class BrowserClient:
                         timeout=30000,
                     )
                 except Exception:
-                    # 列表异步渲染偶发缺失；继续执行后面的逐条扫描，
-                    # 由一致性校验记录实际差异，而不是整页作废。
-                    logger.warning("行政处罚列表等待超时，继续按页面现有内容截图")
-            else:
+                    raise RequestFailed(
+                        "官网处罚栏目未加载出真实条目，已取消空白截图"
+                    )
+                penalty_tables = current_penalty_tables()
+            elif not expected_count:
                 page.wait_for_timeout(1500)
+        if penalties and not penalty_tables:
+            raise RequestFailed("页面未找到已采集的行政处罚条目，已取消空白截图")
         page.mouse.move(5, 5)
         page.wait_for_timeout(500)
 
+        evidence_dir.mkdir(parents=True, exist_ok=True)
         overview_path = evidence_dir / "行政处罚-整页.png"
         panel_path = evidence_dir / "行政处罚-全部条目.png"
         html_path = evidence_dir / "行政处罚-页面源码.html"
@@ -308,13 +509,6 @@ class BrowserClient:
                 by_document[document] = item
 
         items: List[Dict[str, Any]] = []
-        tables = page.locator("#resultTab2 .result-table")
-        penalty_tables = []
-        for table_index in range(tables.count()):
-            candidate = tables.nth(table_index)
-            first_label = candidate.locator("td.graybg").first.inner_text().strip()
-            if first_label == "行政处罚决定书文号":
-                penalty_tables.append(candidate)
         consistency_error = ""
         if len(penalty_tables) != len(penalties):
             consistency_error = (
@@ -613,7 +807,7 @@ class BrowserClient:
                             image_b64 = base64.b64encode(f.read()).decode()
                         answer = self._solve_captcha_jfbym(image_b64)
                         if answer:
-                            logger.info(f"打码平台自动识别成功：{answer}")
+                            logger.info("打码平台自动识别成功")
                         else:
                             logger.info("打码平台识别失败")
                     except Exception as e:
@@ -800,6 +994,13 @@ class BrowserClient:
     def _fetch(self, page: Any, url: str) -> Any:
         """按官网 AJAX 方式请求；CORS/WAF 拒绝时复用同一上下文直取响应。"""
 
+        cached = self._cached_api_response(url)
+        if cached is not None:
+            logger.info(
+                "复用详情页已加载的官网数据，跳过重复请求：%s",
+                urlparse(url).path,
+            )
+            return cached
         self._pace_official_request(page)
         timeout_ms = max(1000, int(self.http.timeout * 1000))
         try:
@@ -884,6 +1085,7 @@ class BrowserClient:
                 )
                 with self._process_lock:
                     self._chrome_process = chrome_process
+                context.on("response", self._remember_api_response)
                 page = context.pages[0] if context.pages else context.new_page()
                 verified = False
                 try:

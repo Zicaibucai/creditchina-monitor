@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlparse
 
 from creditchina_merged.config import ApiConfig
 from creditchina_merged.crawler import CreditChinaCrawler
+from creditchina_merged.http_client import AccessIntercepted
 
 
 class CurrentApiClient:
@@ -109,7 +110,40 @@ class CurrentCrawlerTests(unittest.TestCase):
         self.assertNotIn("采集错误", payload)
         self.assertIn("scenes=defaultScenario", client.urls[0])
 
+    def test_later_administration_page_interception_keeps_first_page_as_partial(self):
+        class PartialClient(CurrentApiClient):
+            def get_json(self, url):
+                parsed = urlparse(url)
+                query = parse_qs(parsed.query)
+                if (
+                    parsed.path.endswith("typeSourceSearch")
+                    and query.get("type") == ["行政管理"]
+                    and query.get("page") == ["2"]
+                ):
+                    raise AccessIntercepted("HTTP 412")
+                payload = super().get_json(url)
+                if (
+                    parsed.path.endswith("typeSourceSearch")
+                    and query.get("type") == ["行政管理"]
+                ):
+                    payload["data"]["total"] = 2
+                return payload
+
+        client = PartialClient()
+        crawler = CreditChinaCrawler(
+            client,
+            ApiConfig(page_size=1, max_pages=2),
+        )
+
+        record = crawler.crawl_administration_company(
+            "上海颐景建筑设计有限公司"
+        )
+
+        self.assertEqual(1, len(record.permissions))
+        self.assertEqual(1, len(record.penalties))
+        self.assertIn("分页不完整", record.errors["行政许可"])
+        self.assertIn("分页不完整", record.errors["行政处罚"])
+
 
 if __name__ == "__main__":
     unittest.main()
-
