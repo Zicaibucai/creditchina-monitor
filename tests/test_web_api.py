@@ -330,6 +330,61 @@ class WebApiTests(unittest.TestCase):
             self.assertEqual(96.5, store.credit_score("企业二")["scoreTotal"])
             self.assertTrue(spider.closed)
 
+    def test_zero_penalty_company_completes_without_proxy_replacement(self):
+        """无处罚企业：整轮采集应一次完成，不触发换 IP/重建会话。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = TaskStore(root / "state.sqlite3")
+
+            class ZeroPenaltyCrawler:
+                def crawl_company(self, company_name):
+                    return EnterpriseRecord(
+                        name=company_name,
+                        encry_str="uuid-zero",
+                        basic={"统一社会信用代码": "CODE-ZERO"},
+                        permissions=[],
+                        penalties=[],
+                    )
+
+            class ZeroPenaltyClient(FakeClient):
+                def __init__(self):
+                    super().__init__()
+                    self.captured = []
+
+                def capture_penalty_evidence(self, company, code, uuid_value, penalties, output_dir):
+                    self.captured.append((company, list(penalties)))
+                    return {
+                        "overview_path": "",
+                        "panel_path": "",
+                        "html_path": "",
+                        "metadata_path": "",
+                        "items": [],
+                        "consistency_error": "",
+                    }
+
+            factory_calls = []
+
+            def factory():
+                factory_calls.append(1)
+                return ZeroPenaltyClient(), ZeroPenaltyCrawler()
+
+            manager = CrawlManager(store, root / "output", crawler_factory=factory)
+            manager.start()
+            task = store.create_task("", ["零处罚企业"])
+            manager.enqueue(task["id"])
+            deadline = time.time() + 5
+            status = ""
+            while time.time() < deadline:
+                current = store.raw_task(task["id"])
+                status = str(current["status"]) if current else ""
+                if status in ("completed", "failed", "intercepted"):
+                    break
+                time.sleep(0.05)
+            manager.stop()
+
+            self.assertEqual("completed", status)
+            self.assertEqual(1, len(factory_calls), "零处罚企业不应触发会话重建/换 IP")
+
     def test_zero_penalty_company_evidence_is_registered_with_all_assets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
