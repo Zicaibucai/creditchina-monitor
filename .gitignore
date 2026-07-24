@@ -1,0 +1,21 @@
+.env.local
+.venv/
+output/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+.DS_Store
+*.log
+
+# 打包构建产物
+build/
+dist/
+
+frontend/node_modules/
+frontend/dist/
+frontend/.vinext/
+frontend/.wrangler/
+frontend/tsconfig.tsbuildinfo
+frontend/.env*

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "creditchina-monitor"
+version = "1.0.0"
+description = "信用中国与上海住建企业信用监控工具"
+readme = "README.md"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[project.scripts]
+creditchina-crawl = "creditchina_merged.cli:main"
+creditchina-api = "creditchina_merged.web_api:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["creditchina_merged*"]
+
+[tool.setuptools.package-data]
+creditchina_merged = ["schema.sql"]

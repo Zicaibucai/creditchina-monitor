@@ -1,0 +1,152 @@
+CREATE TABLE IF NOT EXISTS company_test (
+  company_name VARCHAR(255) NOT NULL PRIMARY KEY,
+  crawl_flag TINYINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_baseinfo (
+  company_name VARCHAR(255) NOT NULL PRIMARY KEY,
+  encry_str VARCHAR(255) NOT NULL DEFAULT '',
+  company_person VARCHAR(255) NOT NULL DEFAULT '',
+  company_status VARCHAR(64) NOT NULL DEFAULT '',
+  company_reg VARCHAR(128) NOT NULL DEFAULT '',
+  company_code VARCHAR(128) NOT NULL DEFAULT '',
+  company_type VARCHAR(255) NOT NULL DEFAULT '',
+  company_register VARCHAR(255) NOT NULL DEFAULT '',
+  company_address TEXT,
+  company_create VARCHAR(64) NOT NULL DEFAULT '',
+  sys_update_time VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_xuke_info (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  company_person VARCHAR(255) NOT NULL DEFAULT '',
+  xk_wsh VARCHAR(255) NOT NULL DEFAULT '',
+  xk_nr TEXT,
+  xk_type VARCHAR(255) NOT NULL DEFAULT '',
+  xk_start VARCHAR(64) NOT NULL DEFAULT '',
+  xk_end VARCHAR(64) NOT NULL DEFAULT '',
+  xk_qx VARCHAR(255) NOT NULL DEFAULT '',
+  xk_jg VARCHAR(255) NOT NULL DEFAULT '',
+  area_code VARCHAR(64) NOT NULL DEFAULT '',
+  xk_dfbm VARCHAR(64) NOT NULL DEFAULT '',
+  new_uptime VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_xuke (company_name, xk_wsh)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_chufa_info (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  company_code VARCHAR(128) NOT NULL DEFAULT '',
+  company_person VARCHAR(255) NOT NULL DEFAULT '',
+  cf_wsh VARCHAR(255) NOT NULL DEFAULT '',
+  cf_name VARCHAR(500) NOT NULL DEFAULT '',
+  cf_type VARCHAR(255) NOT NULL DEFAULT '',
+  cf_jg TEXT,
+  cf_sy TEXT,
+  cf_yj TEXT,
+  cf_zxjg VARCHAR(255) NOT NULL DEFAULT '',
+  cf_rq VARCHAR(64) NOT NULL DEFAULT '',
+  cf_qx VARCHAR(255) NOT NULL DEFAULT '',
+  new_uptime VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_chufa (company_name, cf_wsh)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_redList (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  data_source VARCHAR(255) NOT NULL DEFAULT '',
+  data_num VARCHAR(128) NOT NULL DEFAULT '',
+  data_type VARCHAR(255) NOT NULL DEFAULT '',
+  year_assess VARCHAR(64) NOT NULL DEFAULT '',
+  file_name VARCHAR(500) NOT NULL DEFAULT '',
+  new_update_time VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_red (company_name, data_num, year_assess)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_zdgz_info (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  company_reg VARCHAR(128) NOT NULL DEFAULT '',
+  company_person VARCHAR(255) NOT NULL DEFAULT '',
+  data_type VARCHAR(255) NOT NULL DEFAULT '',
+  data_source VARCHAR(255) NOT NULL DEFAULT '',
+  reason_type VARCHAR(500) NOT NULL DEFAULT '',
+  set_date VARCHAR(64) NOT NULL DEFAULT '',
+  office_name VARCHAR(255) NOT NULL DEFAULT '',
+  new_update VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_zdgz (company_name, company_reg, new_update)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS company_blackList (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  data_type VARCHAR(255) NOT NULL DEFAULT '',
+  data_source VARCHAR(255) NOT NULL DEFAULT '',
+  case_number VARCHAR(255) NOT NULL DEFAULT '',
+  company_name VARCHAR(255) NOT NULL,
+  company_person VARCHAR(255) NOT NULL DEFAULT '',
+  exe_court VARCHAR(255) NOT NULL DEFAULT '',
+  exe_area VARCHAR(255) NOT NULL DEFAULT '',
+  exe_file VARCHAR(255) NOT NULL DEFAULT '',
+  exe_unit VARCHAR(255) NOT NULL DEFAULT '',
+  exe_value TEXT,
+  exe_state TEXT,
+  situation TEXT,
+  pubdate VARCHAR(64) NOT NULL DEFAULT '',
+  register_time VARCHAR(64) NOT NULL DEFAULT '',
+  perform TEXT,
+  no_perform TEXT,
+  new_update VARCHAR(64) NOT NULL DEFAULT '',
+  raw_json JSON,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_black (company_name, case_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 每次企业采集都追加一条批次记录，用于审计与历史导出。
+CREATE TABLE IF NOT EXISTS crawl_history_runs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  basic_count INT UNSIGNED NOT NULL DEFAULT 0,
+  permission_count INT UNSIGNED NOT NULL DEFAULT 0,
+  penalty_count INT UNSIGNED NOT NULL DEFAULT 0,
+  red_list_count INT UNSIGNED NOT NULL DEFAULT 0,
+  watch_list_count INT UNSIGNED NOT NULL DEFAULT 0,
+  black_list_count INT UNSIGNED NOT NULL DEFAULT 0,
+  errors_json JSON,
+  searched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_crawl_history_company_time (company_name, searched_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 只增不减的历史仓：官网后续删除的信息仍然保留。
+-- 同一内容再次出现时只更新最后发现时间和出现次数；内容变更会追加新版本。
+CREATE TABLE IF NOT EXISTS company_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  company_name VARCHAR(255) NOT NULL,
+  section_name VARCHAR(64) NOT NULL,
+  record_key VARCHAR(512) NOT NULL DEFAULT '',
+  fingerprint CHAR(64) NOT NULL,
+  raw_json JSON NOT NULL,
+  first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  seen_count INT UNSIGNED NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_company_history (company_name, section_name, fingerprint),
+  KEY idx_company_history_section (section_name, company_name),
+  KEY idx_company_history_last_seen (last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
