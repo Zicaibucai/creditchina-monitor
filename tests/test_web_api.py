@@ -176,6 +176,84 @@ class WebApiTests(unittest.TestCase):
 
             self.assertIn("PUT", cors.kwargs["allow_methods"])
 
+    def test_cors_defaults_to_localhost_and_is_configurable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = create_app(
+                state_path=root / "state.sqlite3",
+                output_dir=root / "output",
+            )
+            cors = next(
+                middleware
+                for middleware in app.user_middleware
+                if middleware.cls is CORSMiddleware
+            )
+
+            self.assertNotIn("*", cors.kwargs["allow_origins"])
+            self.assertIn("http://localhost:3000", cors.kwargs["allow_origins"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["CREDITCHINA_CORS_ORIGINS"] = "https://board.example.com"
+            try:
+                app = create_app(
+                    state_path=root / "state.sqlite3",
+                    output_dir=root / "output",
+                )
+            finally:
+                os.environ.pop("CREDITCHINA_CORS_ORIGINS", None)
+            cors = next(
+                middleware
+                for middleware in app.user_middleware
+                if middleware.cls is CORSMiddleware
+            )
+
+            self.assertEqual(["https://board.example.com"], cors.kwargs["allow_origins"])
+
+    def test_api_token_is_enforced_when_configured(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ["CREDITCHINA_API_TOKEN"] = "test-token-123"
+            try:
+                app = create_app(
+                    state_path=root / "state.sqlite3",
+                    output_dir=root / "output",
+                )
+            finally:
+                os.environ.pop("CREDITCHINA_API_TOKEN", None)
+            client = TestClient(app)
+
+            self.assertEqual(200, client.get("/api/v1/health").status_code)
+            self.assertEqual(401, client.get("/api/v1/tasks").status_code)
+            self.assertEqual(
+                200,
+                client.get("/api/v1/tasks", headers={"X-API-Token": "test-token-123"}).status_code,
+            )
+            self.assertEqual(
+                200,
+                client.get("/api/v1/tasks?token=test-token-123").status_code,
+            )
+            self.assertEqual(
+                401,
+                client.get("/api/v1/tasks", headers={"X-API-Token": "wrong"}).status_code,
+            )
+
+    def test_api_token_is_optional_when_not_configured(self):
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.environ.pop("CREDITCHINA_API_TOKEN", None)
+            app = create_app(
+                state_path=root / "state.sqlite3",
+                output_dir=root / "output",
+            )
+            client = TestClient(app)
+
+            self.assertEqual(200, client.get("/api/v1/tasks").status_code)
+
     def test_credit_score_is_stored_separately_from_existing_company_data(self):
         with tempfile.TemporaryDirectory() as directory:
             store = TaskStore(Path(directory) / "state.sqlite3")

@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -2028,6 +2028,8 @@ def create_app(
     scheduler = DailyMonitorScheduler(store, manager, company_file)
     auto_daily = os.getenv("CREDITCHINA_AUTO_DAILY", "0").strip().lower() in ("1", "true", "yes", "on")
 
+    api_token = os.getenv("CREDITCHINA_API_TOKEN", "").strip()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         manager.start()
@@ -2045,15 +2047,42 @@ def create_app(
         version="1.0.0",
         lifespan=lifespan,
     )
+
+    if api_token:
+
+        @app.middleware("http")
+        async def require_api_token(request: Request, call_next):
+            # 健康检查保持公开，便于本机脚本探活。
+            # <img>/<a> 等标签无法携带请求头，因此同时接受 token 查询参数。
+            if request.url.path != "/api/v1/health" and (
+                request.headers.get("x-api-token", "") != api_token
+                and request.query_params.get("token", "") != api_token
+            ):
+                from starlette.responses import JSONResponse
+
+                return JSONResponse(status_code=401, content={"detail": "缺少或无效的 API 令牌"})
+            return await call_next(request)
+
+    cors_origins = [
+        origin.strip()
+        for origin in os.getenv("CREDITCHINA_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if not cors_origins:
+        cors_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=False,
         # The settings page saves credentials and storage paths with PUT.
         # Browsers preflight cross-port requests, so omitting PUT here makes a
         # healthy local API look unreachable to the frontend.
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "X-API-Token"],
         expose_headers=["Content-Disposition"],
     )
 

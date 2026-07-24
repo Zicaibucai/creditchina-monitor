@@ -1,10 +1,23 @@
 const configuredApiBase = process.env.NEXT_PUBLIC_CRAWLER_API_BASE?.replace(/\/$/, "");
+const apiToken = process.env.NEXT_PUBLIC_CRAWLER_API_TOKEN ?? "";
 
 export const CRAWLER_API_BASE = configuredApiBase || (
   typeof window !== "undefined"
     ? `http://${window.location.hostname}:8765/api/v1`
     : "http://127.0.0.1:8765/api/v1"
 );
+
+function authHeaders(): Record<string, string> {
+  return apiToken ? { "X-API-Token": apiToken } : {};
+}
+
+// <img>/<a> 标签无法携带请求头，令牌开启时以查询参数形式附加。
+export function crawlerAssetUrl(path: string): string {
+  const separator = path.includes("?") ? "&" : "?";
+  return apiToken
+    ? `${CRAWLER_API_BASE}${path}${separator}token=${encodeURIComponent(apiToken)}`
+    : `${CRAWLER_API_BASE}${path}`;
+}
 
 function connectionMessage() {
   return `无法连接采集 API（${CRAWLER_API_BASE}）。请确认后端已运行，且访问设备与这台电脑处于同一局域网。`;
@@ -18,6 +31,7 @@ export async function crawlerApiJson<T>(path: string, init?: RequestInit): Promi
       cache: "no-store",
       headers: {
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...authHeaders(),
         ...(init?.headers ?? {}),
       },
     });
@@ -40,7 +54,7 @@ export async function downloadRealWorkbook(mode: "current" | "penalties" | "all"
   const query = company.trim() ? `?company=${encodeURIComponent(company.trim())}` : "";
   let response: Response;
   try {
-    response = await fetch(`${CRAWLER_API_BASE}/exports/${mode}${query}`, { cache: "no-store" });
+    response = await fetch(`${CRAWLER_API_BASE}/exports/${mode}${query}`, { cache: "no-store", headers: authHeaders() });
   } catch {
     throw new Error(connectionMessage());
   }
@@ -64,7 +78,7 @@ export async function downloadRealWorkbook(mode: "current" | "penalties" | "all"
 export async function downloadEvidencePackage(announcementId: number) {
   let response: Response;
   try {
-    response = await fetch(`${CRAWLER_API_BASE}/monitor/announcements/${announcementId}/package`, { cache: "no-store" });
+    response = await fetch(`${CRAWLER_API_BASE}/monitor/announcements/${announcementId}/package`, { cache: "no-store", headers: authHeaders() });
   } catch {
     throw new Error(connectionMessage());
   }
@@ -88,7 +102,7 @@ export async function downloadEvidencePackage(announcementId: number) {
 export async function downloadCompanyEvidencePackage(captureId: number) {
   let response: Response;
   try {
-    response = await fetch(`${CRAWLER_API_BASE}/monitor/evidence/${captureId}/package`, { cache: "no-store" });
+    response = await fetch(`${CRAWLER_API_BASE}/monitor/evidence/${captureId}/package`, { cache: "no-store", headers: authHeaders() });
   } catch {
     throw new Error(connectionMessage());
   }

@@ -34,7 +34,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CRAWLER_API_BASE, crawlerApiJson, downloadCompanyEvidencePackage, downloadEvidencePackage, downloadRealWorkbook } from "./crawler-api";
+import { crawlerApiJson, crawlerAssetUrl, downloadCompanyEvidencePackage, downloadEvidencePackage, downloadRealWorkbook } from "./crawler-api";
 import SettingsView from "./settings-view";
 
 type Company = {
@@ -373,7 +373,7 @@ export default function Home() {
 
   const openEvidence = (item: Announcement, which: "before" | "after") => {
     setEvidence({
-      url: `${CRAWLER_API_BASE}/monitor/announcements/${item.id}/evidence/${which}?t=${Date.now()}`,
+      url: crawlerAssetUrl(`/monitor/announcements/${item.id}/evidence/${which}?t=${Date.now()}`),
       title: `${item.company} · ${which === "before" ? "变更前证据" : "变更后证据"}`,
     });
   };
@@ -393,8 +393,8 @@ export default function Home() {
     item?: EvidenceItem,
   ) => {
     const url = asset === "item" && item
-      ? `${CRAWLER_API_BASE}/monitor/evidence/${capture.id}/items/${item.id}?t=${Date.now()}`
-      : `${CRAWLER_API_BASE}/monitor/evidence/${capture.id}/assets/${asset}?t=${Date.now()}`;
+      ? crawlerAssetUrl(`/monitor/evidence/${capture.id}/items/${item.id}?t=${Date.now()}`)
+      : crawlerAssetUrl(`/monitor/evidence/${capture.id}/assets/${asset}?t=${Date.now()}`);
     const label = asset === "overview" ? "官网整页" : asset === "panel" ? "行政处罚栏目" : item?.documentNumber || "行政处罚";
     setEvidence({ url, title: `${capture.company} · ${label}` });
   };
@@ -605,8 +605,8 @@ function EvidenceCaptureList({
       <div className="evidence-capture-actions">
         {capture.hasOverview && <button onClick={() => onOpen(capture, "overview")}><Eye size={13} />整页截图</button>}
         {capture.hasPanel && <button onClick={() => onOpen(capture, "panel")}><Images size={13} />处罚栏目</button>}
-        {capture.hasHtml && <a href={`${CRAWLER_API_BASE}/monitor/evidence/${capture.id}/assets/html`} target="_blank" rel="noreferrer"><FileCode2 size={13} />页面源码</a>}
-        {capture.hasMetadata && <a href={`${CRAWLER_API_BASE}/monitor/evidence/${capture.id}/assets/metadata`} target="_blank" rel="noreferrer"><FileCheck2 size={13} />证据清单</a>}
+        {capture.hasHtml && <a href={crawlerAssetUrl(`/monitor/evidence/${capture.id}/assets/html`)} target="_blank" rel="noreferrer"><FileCode2 size={13} />页面源码</a>}
+        {capture.hasMetadata && <a href={crawlerAssetUrl(`/monitor/evidence/${capture.id}/assets/metadata`)} target="_blank" rel="noreferrer"><FileCheck2 size={13} />证据清单</a>}
       </div>
       {!!capture.items.length && <div className="evidence-item-actions">{capture.items.map((item) => item.hasImage && <button key={item.id} onClick={() => onOpen(capture, "item", item)}><CircleAlert size={12} />{item.documentNumber}</button>)}</div>}
     </article>)}</div> : <div className="company-evidence-empty"><Images size={20} /><span><strong>尚无可调用证据</strong><small>下一次成功采集后，整页截图会出现在这里。</small></span></div>}
