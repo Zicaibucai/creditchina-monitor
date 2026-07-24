@@ -140,7 +140,7 @@ def create_app(
 
     app = FastAPI(
         title="中建八局 AI 探员 · 信用中国采集 API",
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
 
