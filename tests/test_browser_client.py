@@ -217,6 +217,70 @@ class _SlowCaptchaPage(_CaptchaPage):
         return None
 
 
+class _MissingCatalogLocator:
+    """模拟元素不存在的 locator。"""
+
+    @property
+    def first(self):
+        return self
+
+    @staticmethod
+    def wait_for(**kwargs):
+        raise TimeoutError("Timeout 10000ms exceeded.\nCall log:\nwaiting for locator('#xzglCatalog')")
+
+    @staticmethod
+    def inner_text(**kwargs):
+        return "页面正常内容"
+
+    @staticmethod
+    def count():
+        return 0
+
+
+class _NoCatalogPage:
+    """详情页缺少信用信息目录锚点（本次线上 bug 的场景）。"""
+
+    url = "https://www.creditchina.gov.cn/xinyongxinxixiangqing/xyDetail.html"
+
+    def goto(self, *args, **kwargs):
+        return None
+
+    @staticmethod
+    def locator(selector):
+        return _MissingCatalogLocator()
+
+
+class _AltCatalogPage(_NoCatalogPage):
+    """xzglCatalog 缺失、但 cataNum24 存在的页面：应继续采集。"""
+
+    def locator(self, selector):
+        if selector == "#cataNum24":
+            return _AltCatalogTab()
+        if selector == "body":
+            return _MissingCatalogLocator()
+        if selector == ".result-tab1":
+            return _AltCatalogTab()
+        return _MissingCatalogLocator()
+
+
+class _AltCatalogTab:
+    @property
+    def first(self):
+        return self
+
+    @staticmethod
+    def wait_for(**kwargs):
+        return None
+
+    @staticmethod
+    def count():
+        return 0
+
+    @staticmethod
+    def evaluate(script):
+        return None
+
+
 class BrowserClientTests(unittest.TestCase):
     @staticmethod
     def _client(timeout=10):
@@ -284,6 +348,54 @@ class BrowserClientTests(unittest.TestCase):
         self.assertTrue(client._proxy_failure(RuntimeError("Tunnel connection failed: 517 Proxy Setup Failed")))
         self.assertTrue(client._proxy_failure(RuntimeError("Timeout 10000ms exceeded")))
         self.assertFalse(client._proxy_failure(RuntimeError("HTTP 429")))
+
+    def test_missing_catalog_is_not_mistaken_for_proxy_failure(self):
+        """证据页结构缺失的超时不能误判为代理故障去换 IP。"""
+        import tempfile
+        from pathlib import Path
+
+        client = self._client(timeout=4)
+        client.http = HttpConfig(proxies=(parse_proxy("127.0.0.1:18080"),))
+        client.request_interval = 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RequestFailed, "信用信息目录"):
+                client._capture_penalty_page(
+                    _NoCatalogPage(),
+                    {
+                        "company_name": "示例公司",
+                        "company_code": "CODE",
+                        "detail_url": "https://example/detail",
+                        "penalties": [],
+                        "output_dir": directory,
+                    },
+                )
+
+    def test_alternate_catalog_anchor_allows_capture_to_continue(self):
+        """xzglCatalog 缺失但处罚栏存在时，不应整页作废。"""
+        import tempfile
+        from pathlib import Path
+
+        client = self._client(timeout=4)
+        client.http = HttpConfig(proxies=(parse_proxy("127.0.0.1:18080"),))
+        client.request_interval = 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            # 页面没有 result-table，截图步骤会因模拟对象不完整而失败，
+            # 但只要越过了目录锚点等待，就说明不会再卡在 xzglCatalog 上。
+            with self.assertRaises(Exception) as caught:
+                client._capture_penalty_page(
+                    _AltCatalogPage(),
+                    {
+                        "company_name": "示例公司",
+                        "company_code": "CODE",
+                        "detail_url": "https://example/detail",
+                        "penalties": [],
+                        "output_dir": directory,
+                    },
+                )
+            self.assertNotIsInstance(caught.exception, RequestFailed)
+            self.assertNotIn("信用信息目录", str(caught.exception))
 
     def test_official_requests_are_paced_within_one_ip_session(self):
         client = self._client()

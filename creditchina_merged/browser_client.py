@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -98,6 +99,12 @@ class BrowserClient:
         if not self.http.proxies:
             return False
         message = str(error).lower()
+        # Playwright 的页面等待超时（如证据页结构缺失）与代理断连同样表现为
+        # "Timeout ... exceeded"，通过调用栈区分；只有网络层错误才视为代理问题。
+        if isinstance(error, TimeoutError):
+            stack = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+            if "wait_for" in stack or "expect_" in stack:
+                return False
         return any(
             marker in message
             for marker in (
@@ -248,7 +255,19 @@ class BrowserClient:
             )
         ):
             raise AccessIntercepted("官网证据页已显示访问频率拦截")
-        page.locator("#xzglCatalog").wait_for(state="visible", timeout=30000)
+        # 详情页的信用信息目录在部分企业页面加载较慢或结构不同，
+        # 先等任意一个已知锚点，再逐步降级；全部缺失才判定为页面异常。
+        page_ready = False
+        for selector in ("#xzglCatalog", "#cataNum24", ".result-tab1"):
+            try:
+                page.locator(selector).first.wait_for(state="attached", timeout=10000)
+                page_ready = True
+                break
+            except Exception:
+                logger.debug("证据页锚点 %s 未出现，尝试下一个", selector)
+        if not page_ready:
+            body_hint = page.locator("body").inner_text(timeout=5000)[:200]
+            raise RequestFailed("官网证据页未加载出信用信息目录：%s" % body_hint)
         penalty_tab = page.locator("#cataNum24")
         expected_count = 0
         if penalty_tab.count():
@@ -256,15 +275,20 @@ class BrowserClient:
             expected_count = int("".join(character for character in count_text if character.isdigit()) or "0")
             penalty_tab.evaluate("element => element.click()")
             if expected_count:
-                page.wait_for_function(
-                    """
-                    () => {
-                      const first = document.querySelector('#resultTab2 .result-table tr td.graybg');
-                      return first && first.textContent.trim() === '行政处罚决定书文号';
-                    }
-                    """,
-                    timeout=30000,
-                )
+                try:
+                    page.wait_for_function(
+                        """
+                        () => {
+                          const first = document.querySelector('#resultTab2 .result-table tr td.graybg');
+                          return first && first.textContent.trim() === '行政处罚决定书文号';
+                        }
+                        """,
+                        timeout=30000,
+                    )
+                except Exception:
+                    # 列表异步渲染偶发缺失；继续执行后面的逐条扫描，
+                    # 由一致性校验记录实际差异，而不是整页作废。
+                    logger.warning("行政处罚列表等待超时，继续按页面现有内容截图")
             else:
                 page.wait_for_timeout(1500)
         page.mouse.move(5, 5)
